@@ -112,7 +112,7 @@
         background: #fff;
         padding: 30px;
         border-radius: 10px;
-        width: 480px; /* Increased width */
+        width: 480px;
         box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
         margin: 0 auto;
       }
@@ -122,18 +122,18 @@
       }
 
       #registerFace input[type="text"] {
-        width: 95%; /* Increased width */
-        padding: 10px; /* More padding */
-        margin: 8px 0 16px; /* More margin below */
+        width: 95%;
+        padding: 10px;
+        margin: 8px 0 16px;
         border: 1px solid #ccc;
         border-radius: 6px;
-        font-size: 1.1rem; /* Slightly larger font */
+        font-size: 1.1rem;
       }
 
       #registerFace input[type="submit"] {
         display: block;
         margin: 20px auto 0 auto;
-        width: 140px; /* Wider button */
+        width: 140px;
         background-color: #4caf50;
         color: white;
         font-weight: bold;
@@ -250,6 +250,68 @@
         color: #6c757d;
         font-size: 1.2rem;
       }
+
+      /* Modal styles */
+      .modal {
+        display: none;
+        position: fixed;
+        z-index: 1000;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0, 0, 0, 0.9);
+      }
+
+      .modal-content {
+        background-color: #fefefe;
+        margin: 5% auto;
+        padding: 20px;
+        border: 1px solid #888;
+        width: 80%;
+        max-width: 800px;
+        text-align: center;
+      }
+
+      .close {
+        color: #aaa;
+        float: right;
+        font-size: 28px;
+        font-weight: bold;
+        cursor: pointer;
+      }
+
+      .close:hover {
+        color: black;
+      }
+
+      .camera-feed {
+        margin: 20px auto;
+        width: 640px;
+        height: 480px;
+        border: 2px solid #ddd;
+      }
+
+      .camera-feed img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+
+      .progress {
+        margin: 20px 0;
+        height: 30px;
+        background-color: #f1f1f1;
+        border-radius: 5px;
+      }
+
+      .progress-bar {
+        height: 100%;
+        background-color: #4caf50;
+        width: 0%;
+        border-radius: 5px;
+        transition: width 0.3s;
+      }
     </style>
   </head>
   <body>
@@ -283,7 +345,7 @@
       <section id="registerFace">
         <h2 style="text-align: center">Register New Face</h2>
         <div class="register-container">
-          <form action="/capture" method="post" onsubmit="startProgress()">
+          <form id="registerForm" onsubmit="return startCapture()">
             <label>ID:</label><br />
             <input type="text" name="id" required /><br />
             <label>Name:</label><br />
@@ -291,8 +353,6 @@
             <label>Age:</label><br />
             <input type="text" name="age" required /><br />
             <input type="submit" value="📸 Capture" />
-            <progress id="progressBar" value="0" max="100"></progress>
-            <div id="statusText"></div>
           </form>
           <button id="trainModelBtn" onclick="window.location.href='/train'">
             Click to Train Model
@@ -352,8 +412,43 @@
       </section>
     </main>
 
+    <!-- Camera Modal -->
+    <div id="cameraModal" class="modal">
+      <div class="modal-content">
+        <span class="close" onclick="closeModal()">&times;</span>
+        <h3>Register New Face</h3>
+        <p>Please position your face in the frame</p>
+        <div class="camera-feed">
+          <img id="captureFeed" src="" alt="Camera Feed" />
+        </div>
+        <div class="progress">
+          <div class="progress-bar" id="modalProgressBar"></div>
+        </div>
+        <!-- <div id="modalProgressText">Samples: 0/50</div> -->
+        <button
+          id="cancelCaptureBtn"
+          onclick="cancelCapture()"
+          style="
+            margin-top: 20px;
+            padding: 10px 20px;
+            background-color: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+          "
+        >
+          Cancel Capture
+        </button>
+      </div>
+    </div>
+
     <!-- JavaScript -->
     <script>
+      let captureInterval;
+      let currentSamples = 0;
+      let captureActive = false;
+
       function showSection(id) {
         const sections = document.querySelectorAll("main section");
         sections.forEach((section) => {
@@ -364,23 +459,82 @@
         });
       }
 
-      function startProgress() {
-        const progressBar = document.getElementById("progressBar");
-        const statusText = document.getElementById("statusText");
-        progressBar.style.display = "block";
-        progressBar.value = 0;
-        statusText.innerText = "Starting capture...";
+      function startCapture() {
+        // Get form values
+        const id = document.querySelector(
+          "#registerForm input[name='id']"
+        ).value;
+        const name = document.querySelector(
+          "#registerForm input[name='name']"
+        ).value;
+        const age = document.querySelector(
+          "#registerForm input[name='age']"
+        ).value;
 
-        let value = 0;
-        const interval = setInterval(() => {
-          value += 5;
-          progressBar.value = value;
-          statusText.innerText = "Capturing images: " + value + "%";
-          if (value >= 100) {
-            clearInterval(interval);
-            statusText.innerText = "Capture completed!";
+        if (!id || !name || !age) {
+          alert("Please fill in all fields");
+          return false;
+        }
+
+        // Show the modal
+        const modal = document.getElementById("cameraModal");
+        modal.style.display = "block";
+
+        // Start the camera feed
+        const captureFeed = document.getElementById("captureFeed");
+        captureFeed.src = `/capture_feed?id=${id}&name=${name}&age=${age}`;
+
+        // Start progress tracking
+        startProgressTracking();
+
+        // Prevent form submission
+        return false;
+      }
+
+      function startProgressTracking() {
+        const progressBar = document.getElementById("modalProgressBar");
+        currentSamples = 0;
+        captureActive = true;
+
+        // Update progress bar only (no text updates)
+        captureInterval = setInterval(() => {
+          if (!captureActive) {
+            clearInterval(captureInterval);
+            return;
+          }
+
+          const percentage = Math.round((currentSamples / 50) * 100);
+          progressBar.style.width = `${percentage}%`;
+
+          if (currentSamples >= 50) {
+            clearInterval(captureInterval);
+            setTimeout(() => {
+              closeModal();
+              alert("Face capture completed successfully!");
+              document.getElementById("registerForm").submit();
+            }, 1000);
           }
         }, 300);
+      }
+
+      // Remove the entire checkSampleCount() function and its call
+
+      function cancelCapture() {
+        captureActive = false;
+        clearInterval(captureInterval);
+        closeModal();
+        alert("Capture process cancelled");
+      }
+
+      function closeModal() {
+        const modal = document.getElementById("cameraModal");
+        modal.style.display = "none";
+        document.getElementById("captureFeed").src = "";
+        document.getElementById("modalProgressBar").style.width = "0%";
+        document.getElementById("modalProgressText").textContent =
+          "Samples: 0/50";
+        captureActive = false;
+        clearInterval(captureInterval);
       }
 
       async function startCameras() {
@@ -458,6 +612,29 @@
             "Stop Cameras";
         }
       }
+
+      // Listen for sample count updates from the video feed
+      function checkSampleCount() {
+        const captureFeed = document.getElementById("captureFeed");
+        if (captureFeed && captureFeed.src) {
+          try {
+            // This is a simplified approach - in a real app you might use more sophisticated
+            // methods to extract the sample count from the video feed
+            const currentText =
+              document.getElementById("modalProgressText").textContent;
+            const matches = currentText.match(/Samples: (\d+)\/50/);
+            if (matches && matches[1]) {
+              currentSamples = parseInt(matches[1]);
+            }
+          } catch (e) {
+            console.log("Error checking sample count:", e);
+          }
+        }
+        setTimeout(checkSampleCount, 300);
+      }
+
+      //   // Start checking for sample count updates
+      //   window.addEventListener("load", checkSampleCount);
     </script>
   </body>
 </html>

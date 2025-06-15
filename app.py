@@ -26,9 +26,6 @@ TELEGRAM_CHAT_ID = '-1002409276148'
 last_alert_time = 0
 alert_cooldown = 30
 
-ROI_TOP_LEFT = (768, 510)
-ROI_BOTTOM_RIGHT = (1179, 780)
-
 # Camera control variables
 rtsp_active = False
 webcam_active = False
@@ -155,80 +152,6 @@ def preprocess_face(face_img):
     
     return face_img
 
-# === ROUTES ===
-@app.get("/", response_class=HTMLResponse)
-def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
-
-@app.post("/capture")
-def capture(id: str = Form(...), name: str = Form(...), age: str = Form(...)):
-    insert_or_update(id, name, age)
-
-    cam = cv2.VideoCapture(0)
-    sampleNum = 0
-    min_face_size = 100  # Minimum face size in pixels to accept
-    
-    while True:
-        ret, frame = cam.read()
-        if not ret:
-            break
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = face_detector(gray)
-
-        for (x, y, w, h) in faces:
-            # Only save if face is large enough
-            if w >= min_face_size and h >= min_face_size:
-                sampleNum += 1
-                face_roi = gray[y:y+h, x:x+w]
-                face_roi = preprocess_face(face_roi)
-                cv2.imwrite(f"dataset/user.{id}.{sampleNum}.jpg", face_roi)
-                if sampleNum >= 50:  # Increased from 30 to 50 samples
-                    break
-        if sampleNum >= 50:
-            break
-        
-    play_sound_async("capture-complete.wav")
-
-    cam.release()
-    cv2.destroyAllWindows()
-    return RedirectResponse("/", status_code=303)
-
-@app.get("/train")
-def train_model():
-    # Create augmented dataset
-    def augment_image(img):
-        augmented = []
-        # Original
-        augmented.append(img)
-        # Flip horizontally
-        augmented.append(cv2.flip(img, 1))
-        # Rotate slightly
-        rows, cols = img.shape
-        for angle in [-5, 5]:
-            M = cv2.getRotationMatrix2D((cols/2, rows/2), angle, 1)
-            rotated = cv2.warpAffine(img, M, (cols, rows))
-            augmented.append(rotated)
-        return augmented
-
-    faces, ids = [], []
-    image_paths = [os.path.join("dataset", f) for f in os.listdir("dataset")]
-    
-    for path in image_paths:
-        img = Image.open(path).convert("L")
-        face_np = np.array(img, np.uint8)
-        face_np = preprocess_face(face_np)
-        
-        # Augment each image
-        for augmented_face in augment_image(face_np):
-            faces.append(augmented_face)
-            ids.append(int(os.path.split(path)[-1].split(".")[1]))
-
-    recognizer.train(faces, np.array(ids))
-    recognizer.save(training_file)
-    np.savez(data_file, faces=np.array(faces, dtype=object), ids=np.array(ids))
-
-    return {"status": "Training complete with augmentation!"}
-
 # === RTSP STREAM SETUP ===
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;udp|buffer_size;1024"
 
@@ -268,7 +191,7 @@ class RTSPCamera:
         global rtsp_active
         rtsp_active = False
 
-rtsp_stream = RTSPCamera("rtsp://Tp-200:Kangcn_2001@192.168.202.205:554/stream1")
+rtsp_stream = RTSPCamera("rtsp://Tp-200:Kangcn_2001@192.168.253.205:554/stream1")
 
 # === STREAMING FUNCTIONS ===
 def gen_detection_frames():
@@ -367,8 +290,19 @@ def gen_recognition_frames():
             else:
                 cv2.putText(frame, "Unknown", (x, y - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                # Draw bounding box (already done above)
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
                 current_time = time.time()
                 if current_time - last_sound_time > sound_cooldown:
+                    alert_frame = frame.copy()
+                    
+                    padding = 20
+                    x1 = max(0, x - padding)
+                    y1 = max(0, y - padding)
+                    x2 = min(frame.shape[1], x + w + padding)
+                    y2 = min(frame.shape[0], y + h + padding)
+                    cropped_face = frame[y1:y2, x1:x2]
+                    
                     # Save current frame to a temp file
                     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_file:
                         temp_image_path = tmp_file.name
@@ -383,6 +317,11 @@ def gen_recognition_frames():
                     )
                     play_sound_async("alert-sound.wav")
                     last_sound_time = current_time
+                    # Clean up the temp file after sending
+                    try:
+                        os.unlink(temp_image_path)
+                    except:
+                        pass
             
             cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
@@ -392,8 +331,98 @@ def gen_recognition_frames():
         yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n")
     
     cap.release()
-    # global webcam_active
     webcam_active = False
+
+@app.get("/capture_feed")
+def capture_feed(id: str, name: str, age: str):
+    def generate():
+        cap = cv2.VideoCapture(0)
+        sampleNum = 0
+        min_face_size = 100
+        
+        while sampleNum < 50:  # Ensure we capture exactly 50 samples
+            ret, frame = cap.read()
+            if not ret:
+                break
+                
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = face_detector(gray)
+
+            for (x, y, w, h) in faces:
+                if w >= min_face_size and h >= min_face_size:
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                    sampleNum += 1
+                    face_roi = gray[y:y+h, x:x+w]
+                    face_roi = preprocess_face(face_roi)
+                    cv2.imwrite(f"dataset/user.{id}.{sampleNum}.jpg", face_roi)
+                    
+                    # Only show sample number on frame (removed the modal text updates)
+                    cv2.putText(frame, f"Samples: {sampleNum}/50", (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                    
+                    if sampleNum >= 50:
+                        break
+
+            ret, buffer = cv2.imencode('.jpg', frame)
+            if not ret:
+                continue
+                
+            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n")
+            
+            # Small delay to prevent overwhelming the system
+            time.sleep(0.1)
+                
+        cap.release()
+        play_sound_async("capture-complete.wav")
+        insert_or_update(id, name, age)  # Insert data after capture is complete
+
+    return StreamingResponse(generate(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+# === ROUTES ===
+@app.get("/", response_class=HTMLResponse)
+def index(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
+@app.post("/capture")
+def capture(id: str = Form(...), name: str = Form(...), age: str = Form(...)):
+    # Data is now inserted after capture is complete in capture_feed
+    return RedirectResponse("/", status_code=303)
+
+@app.get("/train")
+def train_model():
+    # Create augmented dataset
+    def augment_image(img):
+        augmented = []
+        # Original
+        augmented.append(img)
+        # Flip horizontally
+        augmented.append(cv2.flip(img, 1))
+        # Rotate slightly
+        rows, cols = img.shape
+        for angle in [-5, 5]:
+            M = cv2.getRotationMatrix2D((cols/2, rows/2), angle, 1)
+            rotated = cv2.warpAffine(img, M, (cols, rows))
+            augmented.append(rotated)
+        return augmented
+
+    faces, ids = [], []
+    image_paths = [os.path.join("dataset", f) for f in os.listdir("dataset")]
+    
+    for path in image_paths:
+        img = Image.open(path).convert("L")
+        face_np = np.array(img, np.uint8)
+        face_np = preprocess_face(face_np)
+        
+        # Augment each image
+        for augmented_face in augment_image(face_np):
+            faces.append(augmented_face)
+            ids.append(int(os.path.split(path)[-1].split(".")[1]))
+
+    recognizer.train(faces, np.array(ids))
+    recognizer.save(training_file)
+    np.savez(data_file, faces=np.array(faces, dtype=object), ids=np.array(ids))
+
+    return {"status": "Training complete with augmentation!"}
 
 @app.get("/start_cameras")
 def start_cameras():

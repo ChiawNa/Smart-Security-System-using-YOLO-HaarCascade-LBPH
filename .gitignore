@@ -1,10 +1,12 @@
 __pycache__/
 env/
-haarcascade_eye.xml
 roi.py
 steps.txt
 testlbph.py
 main.py
 main2.py
+main3.py
 dataset/
 style.html
+style2.html
+main3.py
